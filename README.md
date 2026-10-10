@@ -88,6 +88,10 @@ We’re thrilled to announce ​**UniAD 2.0**, a milestone release delivering cr
 - [GPU Requirements](docs/TRAIN_EVAL.md#gpu)
 - [Train/Eval](docs/TRAIN_EVAL.md)
 
+### UniAD 编译器原型
+
+`codex/uniad-cuda-mlir` 分支提供 stage2 BEV encoder 单层 FFN 的 CUDA/HXP + cuBLAS 基线和 MLIR 融合优化；范围、环境与复现命令见[中文技术说明](docs/UNIAD_COMPILER.md)。该原型目前不代表完整 UniAD 的端到端编译或性能。
+
 ## Results and Pre-trained Models <a name="models"></a>
 UniAD is trained in two stages. Pretrained checkpoints of both stages will be released and the results of each model are listed in the following tables.
 

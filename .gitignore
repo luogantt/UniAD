@@ -143,6 +143,9 @@ ckpts
 # work_dirs
 **/work_dirs
 
+# UniAD compiler interchange bundles and generated CUDA/MLIR artifacts
+artifacts/uniad_compiler/
+
 batchscript*
 phoenix*
 

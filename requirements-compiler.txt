@@ -1,0 +1,4 @@
+# Install this file in a separate Python >=3.11 compiler environment.
+# The official UniAD runtime remains Python 3.9 / Torch 2.0.1 / CUDA 11.8.
+numpy>=1.26
+gac-heterogeneous[cuda12] @ git+https://github.com/luogantt/General-AI-Compiler.git@c494d9e0a5bb841ea131d3397fb42691daf3f8f9
