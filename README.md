@@ -92,6 +92,8 @@ We’re thrilled to announce ​**UniAD 2.0**, a milestone release delivering cr
 
 `codex/uniad-cuda-mlir` 分支提供 stage2 BEV encoder 单层 FFN 的 CUDA/HXP + cuBLAS 基线和 MLIR 融合优化；范围、环境与复现命令见[中文技术说明](docs/UNIAD_COMPILER.md)。该原型目前不代表完整 UniAD 的端到端编译或性能。
 
+完整 UniAD 2.0 native PyTorch 基线已在 RTX 3080 上使用真实 checkpoint 和 nuScenes `v1.0-mini` 测量：warmup 10 帧后按时序运行 50 帧，五个任务 head 全部执行；完整模型调用均值 `822.885 ms`、中位数 `806.619 ms`、P90 `902.287 ms`、P99 `982.392 ms`，按均值为 `1.215 FPS`。`workers=0` 时单独记录的串行 input pipeline + 模型均值为 `3737.789 ms`（`0.268 FPS`）。原始逐帧报告和边界说明见 [RTX 3080 / nuScenes mini 端到端验证](docs/validation/uniad-e2e-rtx3080-nuscenes-mini/README.md)。该报告的 `compiled_subgraphs` 为空，MLIR 仍未接入整网；数据集是 mini，不是完整 nuScenes validation。
+
 ## Results and Pre-trained Models <a name="models"></a>
 UniAD is trained in two stages. Pretrained checkpoints of both stages will be released and the results of each model are listed in the following tables.
 

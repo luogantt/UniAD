@@ -9,7 +9,7 @@
 - 推理语义：`MatMul(256→512) + Bias + ReLU → MatMul(512→256) + Bias + Residual + LayerNorm`。配置中的 dropout 在推理模式下为恒等操作。
 - `--layer` 可选择 encoder 的第 0～5 层；一次导出和编译只处理其中一层。
 
-这个原型用于验证 UniAD 子图的权重导出、编译、封装、正确性和 GPU 性能测量。它**不是完整 UniAD 编译器**：BEV attention、deformable attention、tracking、mapping、motion、occupancy 和 planning 等模块仍由原有 PyTorch/MMCV 流程执行，因此本工具的结果不能作为完整 UniAD 的端到端延迟、吞吐量或精度数据。
+这个原型用于验证 UniAD 子图的权重导出、编译、封装、正确性和 GPU 性能测量。它**不是完整 UniAD 编译器**：BEV attention、deformable attention、tracking、mapping、motion、occupancy 和 planning 等模块仍由原有 PyTorch/MMCV 流程执行，因此 FFN 编译结果不能作为完整 UniAD 的端到端延迟、吞吐量或精度数据。本文同时记录了一组完整 UniAD 的 native PyTorch 端到端基线，用于后续整网接入时比较；该基线没有执行任何已编译子图。
 
 ## 两阶段实现
 
@@ -71,7 +71,38 @@ python tools/uniad_compiler/make_synthetic_bundle.py artifacts/uniad_compiler/sy
 
 基准报告区分两种时间边界：resident GPU 时间保持输入、权重和 workspace 常驻显存；public `run()` 时间包含参数检查、H2D、计算、D2H 和同步。正确性阈值为 `rtol=1e-4`、`atol=1e-5`。`--repeats` 必须是偶数，才能保证两种测量顺序样本数相同。
 
+完整 UniAD native PyTorch 基线需要真实 checkpoint 和数据集，并在 UniAD Python 3.9 环境中运行。下面的命令保留时序状态，先 warmup 10 帧，再测量 50 帧；把示例路径替换成实际数据位置。
+
+```bash
+python -B tools/uniad_compiler/benchmark_e2e.py \
+  projects/configs/stage2_e2e/base_e2e.py ckpts/uniad_base_e2e.pth \
+  --output artifacts/uniad_compiler/uniad-e2e-rtx3080-50frames.json \
+  --device 0 --warmup 10 --measure 50 --workers 0 --log-interval 5 \
+  --cfg-options \
+  data.test.data_root=/path/to/nuscenes \
+  data.test.ann_file=/path/to/nuscenes_infos_temporal_val.pkl \
+  model.motion_head.anchor_info_path=/path/to/motion_anchor_infos_mode6.pkl
+```
+
+这项基准使用 `strict=True` 加载 checkpoint，并要求 tracking、mapping、motion、occupancy、planning 五个 head 全部存在。模型计时从 dataloader 生成 CPU batch 后开始，包含 `MMDataParallel` scatter/H2D、完整 `forward_test`、Python 主机工作和 CUDA 执行，并在计时前后同步 CUDA。阻塞的 `next(data_loader)` 等待单独记录；报告还给出未重叠的 `next() + model` 串行观测时间。
+
 ## 性能数据边界
+
+### 完整 UniAD native PyTorch 基线
+
+在 RTX 3080 / SM86 上使用真实 `uniad_base_e2e.pth` 和 nuScenes `v1.0-mini` 完成了完整 UniAD 2.0 `stage2_e2e` forward 基线。协议为 batch 1、`workers=0`、按数据集顺序执行，warmup 10 帧后测量 50 帧；测量跨 2 个场景，包含 1 个首帧和 49 个稳态帧。五个任务 head 全部执行，checkpoint 严格加载。
+
+| 计时项 | 均值 | 中位数 | P90 | P99 | 由均值换算的吞吐量 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 完整模型调用，50 帧 | 822.885 ms | 806.619 ms | 902.287 ms | 982.392 ms | 1.215 FPS |
+| dataloader 等待，50 帧 | 2914.904 ms | 2990.312 ms | 3616.270 ms | 4350.067 ms | — |
+| 串行 input pipeline + 模型，50 帧 | 3737.789 ms | 3784.887 ms | 4376.574 ms | 5303.153 ms | 0.268 FPS |
+
+模型调用的 49 个稳态帧均值为 `824.581 ms`、中位数为 `807.731 ms`；唯一首帧为 `739.767 ms`，单一样本不足以代表通常的首帧开销。测量期 PyTorch allocator 峰值为 `2.405 GiB` allocated、`3.340 GiB` reserved。
+
+这是一组 native PyTorch 同步 wall-time 基线，JSON 中的 `compiled_subgraphs` 为空。当前 MLIR FFN 尚未接入整网，因而这里没有 MLIR 端到端加速比。数据来自 nuScenes mini 中配置后长度为 81 的 test split，本次只测量其中 50 帧，不是完整 nuScenes validation，也不包含精度评测。完整逐帧数据、日志、输入/源码 SHA-256 和复核说明见 [`validation/uniad-e2e-rtx3080-nuscenes-mini`](validation/uniad-e2e-rtx3080-nuscenes-mini/README.md)。
+
+### BEV encoder 单层 FFN 编译基准
 
 已经在 RTX 3080 / SM86 上使用上述 seed `20261011` 的 bundle 完成**生产形状、合成权重和合成输入**的真机验证。两个独立进程分别改变首次后端顺序，得到下列 resident GPU 中位数：
 
@@ -82,7 +113,7 @@ python tools/uniad_compiler/make_synthetic_bundle.py artifacts/uniad_compiler/sy
 
 两条路径的最大绝对误差都是 `9.5367431640625e-7`。这是单层 FFN 的设备常驻计算时间；包含约 41 MB 输入 H2D 和约 41 MB 输出 D2H 的 public `run()` wall time约为 34 ms，不能和 resident 数字混用。原始 JSON、逐 repeat 顺序、源文件摘要和协议说明见 [`validation/uniad-compiler-rtx3080-2026-10-11`](validation/uniad-compiler-rtx3080-2026-10-11/README.md)。
 
-当前远端仍缺少 UniAD checkpoint 和 nuScenes dataset，所以尚未完成真实权重 golden、完整 UniAD 精度或端到端速度。上表不能换算成完整 UniAD 帧率，也不是 RTX 3070 的设备实测。
+上表仍使用生产形状的合成权重和合成输入，只代表单层 FFN。真实 checkpoint 已用于前述 native PyTorch 整网基线，但尚未用于 FFN 编译路径的真实权重 golden，也尚未完成完整 UniAD 精度评测或 MLIR 整网接入。FFN 数字不能换算成完整 UniAD 帧率；两组结果都不是 RTX 3070 的设备实测。
 
 ## 下一步优化
 
