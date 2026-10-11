@@ -25,6 +25,7 @@ from pathlib import Path
 import platform
 import random
 import statistics
+import subprocess
 import sys
 import tempfile
 import time
@@ -188,7 +189,10 @@ def _timing_groups(samples: Sequence[Mapping[str, Any]], field: str) -> Dict[str
         for sample in samples
         if sample["frame_kind"] == "steady-state"
     ]
-    include_fps = field == "model_call_wall_ms"
+    include_fps = field in (
+        "model_call_wall_ms",
+        "observed_next_plus_model_wall_ms",
+    )
     return {
         "all": _distribution(all_values, include_fps=include_fps),
         "first_frame": _distribution(first_values, include_fps=include_fps),
@@ -205,6 +209,52 @@ def _sha256_file(path: Path, block_size: int = 1024 * 1024) -> str:
                 break
             digest.update(block)
     return digest.hexdigest()
+
+
+def _repository_git_state(root: Path) -> Dict[str, Any]:
+    """Return Git provenance when the benchmark runs from a checkout."""
+
+    result: Dict[str, Any] = {
+        "root": str(root.resolve()),
+        "head": None,
+        "tracked_files_dirty": None,
+    }
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return result
+    revision = head.stdout.strip().lower()
+    if head.returncode != 0 or len(revision) != 40 or any(
+        character not in "0123456789abcdef" for character in revision
+    ):
+        return result
+    result["head"] = revision
+    try:
+        status = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "status",
+                "--porcelain",
+                "--untracked-files=no",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return result
+    if status.returncode == 0:
+        result["tracked_files_dirty"] = bool(status.stdout.strip())
+    return result
 
 
 def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -569,6 +619,7 @@ def _benchmark(args: argparse.Namespace, cfg_options: Mapping[str, Any]) -> Dict
             "frame_kind": "first-frame" if first_frame else "steady-state",
             "dataloader_wait_ms": wait_ms,
             "model_call_wall_ms": elapsed_ms,
+            "observed_next_plus_model_wall_ms": wait_ms + elapsed_ms,
         }
         sample.update(track_state())
         samples.append(sample)
@@ -624,7 +675,19 @@ def _benchmark(args: argparse.Namespace, cfg_options: Mapping[str, Any]) -> Dict
             "temporal state is preserved across chronological batch-1 samples",
             "checkpoint loading rejects missing, unexpected, and incompatible state-dict keys",
             "track query telemetry is copied to CPU after the timed model call",
+            (
+                "observed_next_plus_model_wall_ms adds the blocking next(data_loader) "
+                "wait to model_call_wall_ms; with workers=0 this is the serialized "
+                "input-pipeline plus model latency"
+            ),
         ],
+        "provenance": {
+            "repository": _repository_git_state(REPOSITORY_ROOT),
+            "benchmark_script": {
+                "path": str(Path(__file__).resolve()),
+                "sha256": _sha256_file(Path(__file__).resolve()),
+            },
+        },
         "inputs": {
             "config": {
                 "path": str(config_path),
@@ -688,6 +751,9 @@ def _benchmark(args: argparse.Namespace, cfg_options: Mapping[str, Any]) -> Dict
         "timing_ms": {
             "model_call_wall": _timing_groups(samples, "model_call_wall_ms"),
             "dataloader_wait": _timing_groups(samples, "dataloader_wait_ms"),
+            "observed_next_plus_model_wall": _timing_groups(
+                samples, "observed_next_plus_model_wall_ms"
+            ),
             "warmup_dataloader_wait": _distribution(warmup_waits),
         },
         "memory": {

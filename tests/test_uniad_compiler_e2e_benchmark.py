@@ -145,6 +145,18 @@ class StatisticsTests(unittest.TestCase):
         self.assertEqual(grouped["first_frame"]["median"], 4.0)
         self.assertEqual(grouped["steady_state"]["median"], 2.5)
 
+    def test_observed_end_to_end_group_reports_fps(self):
+        samples = [
+            {
+                "frame_kind": "steady-state",
+                "observed_next_plus_model_wall_ms": 2500.0,
+            }
+        ]
+        grouped = benchmark._timing_groups(
+            samples, "observed_next_plus_model_wall_ms"
+        )
+        self.assertAlmostEqual(grouped["all"]["fps_from_mean_latency"], 0.4)
+
 
 class ProvenanceAndOutputTests(unittest.TestCase):
     def test_sha256_file_streaming_result(self):
@@ -169,6 +181,13 @@ class ProvenanceAndOutputTests(unittest.TestCase):
             data_infos = [{"scene_token": "scene-a"}, {"scene_token": "scene-b"}]
 
         self.assertEqual(benchmark._scene_token(Dataset(), 1, {}), "scene-b")
+
+    def test_repository_git_state_is_explicit_outside_a_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = benchmark._repository_git_state(Path(directory))
+        self.assertIsNone(result["head"])
+        self.assertIsNone(result["tracked_files_dirty"])
+        self.assertTrue(Path(result["root"]).is_absolute())
 
 
 if __name__ == "__main__":
